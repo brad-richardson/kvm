@@ -581,7 +581,7 @@ export default function WebRTCVideo({
       const abortController = new AbortController();
       const signal = abortController.signal;
 
-      videoElmRefValue.addEventListener("mousemove", mouseHandler, { signal });
+      videoElmRefValue.addEventListener("pointermove", mouseHandler, { signal });
       videoElmRefValue.addEventListener("pointerdown", mouseHandler, { signal });
       videoElmRefValue.addEventListener("pointerup", mouseHandler, { signal });
       videoElmRefValue.addEventListener("wheel", mouseWheelHandler, {
@@ -600,6 +600,32 @@ export default function WebRTCVideo({
           { signal },
         );
       } else {
+        // Absolute mode touch safety: on iOS WebKit a touch-drag is reclassified as a
+        // scroll/zoom gesture and fires `pointercancel` instead of `pointerup`, so the
+        // button-up report is never sent and the remote acts as if the button is held
+        // (drag-select). Capture the primary finger so up/move keep arriving even if it
+        // drifts off the video, and force a button release if the gesture is cancelled.
+        // Gated to touch so mouse/pen behavior is unchanged.
+        videoElmRefValue.addEventListener(
+          "pointerdown",
+          (e: PointerEvent) => {
+            if (e.pointerType !== "touch" || !e.isPrimary) return;
+            try {
+              videoElmRefValue.setPointerCapture(e.pointerId);
+            } catch {
+              // best-effort; ignore if capture is unavailable
+            }
+          },
+          { signal },
+        );
+        videoElmRefValue.addEventListener(
+          "pointercancel",
+          (e: PointerEvent) => {
+            if (e.pointerType === "touch") resetMousePosition();
+          },
+          { signal },
+        );
+
         // Reset the mouse position when the window is blurred or the document is hidden
         window.addEventListener("blur", resetMousePosition, { signal });
         document.addEventListener("visibilitychange", resetMousePosition, { signal });
@@ -721,17 +747,20 @@ export default function WebRTCVideo({
                         disablePictureInPicture
                         controlsList="nofullscreen"
                         style={videoStyle}
-                        className={cx("h-full w-full object-contain transition-all duration-1000", {
-                          "cursor-none": settings.isCursorHidden,
-                          "pointer-events-none": isOcrMode,
-                          "opacity-0!":
-                            isVideoLoading ||
-                            hdmiError ||
-                            hasConnectionIssues ||
-                            peerConnectionState !== "connected",
-                          "opacity-60!": showPointerLockBar,
-                          "animate-slideUpFade": isPlaying,
-                        })}
+                        className={cx(
+                          "h-full w-full touch-pinch-zoom object-contain transition-all duration-1000",
+                          {
+                            "cursor-none": settings.isCursorHidden,
+                            "pointer-events-none": isOcrMode,
+                            "opacity-0!":
+                              isVideoLoading ||
+                              hdmiError ||
+                              hasConnectionIssues ||
+                              peerConnectionState !== "connected",
+                            "opacity-60!": showPointerLockBar,
+                            "animate-slideUpFade": isPlaying,
+                          },
+                        )}
                       />
                       {audioEnabled && <audio ref={audioElm} autoPlay playsInline hidden />}
                       <OcrOverlay />

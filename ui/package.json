@@ -25,6 +25,7 @@
     "i18n:find-unused": "python3 ./tools/find_unused_messages.py",
     "i18n:find-dupes": "python3 ./tools/find_duplicate_translations.py",
     "test:e2e": "playwright test",
+    "test:unit": "playwright test --config=playwright.unit.config.ts",
     "prepare": "cd .. && husky ui/.husky"
   },
   "dependencies": {

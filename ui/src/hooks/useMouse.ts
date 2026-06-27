@@ -3,6 +3,14 @@ import { useCallback, useRef, useState } from "react";
 import { useJsonRpc } from "./useJsonRpc";
 import { useHidRpc } from "./useHidRpc";
 import { useMouseStore, useSettingsStore } from "./stores";
+import {
+  getEffectiveVideoArea,
+  isInVideoBounds,
+  mapOffsetToAbs,
+  stepTouchGesture,
+  type TouchGesture,
+  type TouchPointerEvent,
+} from "./absMouse";
 
 const calcDelta = (pos: number) => (Math.abs(pos) < 10 ? pos * 2 : pos);
 
@@ -22,6 +30,9 @@ export default function useMouse() {
 
   // Track last absolute mouse position for resetMousePosition
   const lastAbsPos = useRef({ x: 0, y: 0 });
+
+  // Active touch gesture for tap-vs-drag detection in absolute mode.
+  const touchGesture = useRef<TouchGesture>(null);
 
   // RPC hooks
   const { send } = useJsonRpc();
@@ -83,41 +94,50 @@ export default function useMouse() {
         if (!videoClientWidth || !videoClientHeight) return;
         if (mouseMode !== "absolute") return;
 
-        // Get the aspect ratios of the video element and the video stream
-        const videoElementAspectRatio = videoClientWidth / videoClientHeight;
-        const videoStreamAspectRatio = videoWidth / videoHeight;
+        const area = getEffectiveVideoArea({
+          videoClientWidth,
+          videoClientHeight,
+          videoWidth,
+          videoHeight,
+        });
+        const { x, y } = mapOffsetToAbs(e.offsetX, e.offsetY, area);
 
-        // Calculate the effective video display area
-        let effectiveWidth = videoClientWidth;
-        let effectiveHeight = videoClientHeight;
-        let offsetX = 0;
-        let offsetY = 0;
-
-        if (videoElementAspectRatio > videoStreamAspectRatio) {
-          // Pillarboxing: black bars on the left and right
-          effectiveWidth = videoClientHeight * videoStreamAspectRatio;
-          offsetX = (videoClientWidth - effectiveWidth) / 2;
-        } else if (videoElementAspectRatio < videoStreamAspectRatio) {
-          // Letterboxing: black bars on the top and bottom
-          effectiveHeight = videoClientWidth / videoStreamAspectRatio;
-          offsetY = (videoClientHeight - effectiveHeight) / 2;
+        const pe = e as PointerEvent;
+        if (pe.pointerType !== "touch") {
+          // Mouse and pen forward the button state directly (unchanged behavior).
+          sendAbsMouseMovement(x, y, e.buttons);
+          return;
         }
 
-        // Clamp mouse position within the effective video boundaries
-        const clampedX = Math.min(Math.max(offsetX, e.offsetX), offsetX + effectiveWidth);
-        const clampedY = Math.min(Math.max(offsetY, e.offsetY), offsetY + effectiveHeight);
+        // Only the primary finger drives the cursor; ignore additional touch
+        // points such as the second finger of a pinch-zoom, which would
+        // otherwise corrupt the single tracked gesture.
+        if (!pe.isPrimary) return;
 
-        // Map clamped mouse position to the video stream's coordinate system
-        const relativeX = (clampedX - offsetX) / effectiveWidth;
-        const relativeY = (clampedY - offsetY) / effectiveHeight;
+        // Ignore touches in the letterbox/pillarbox bars so the dead zone doesn't
+        // click the remote. Exceptions: an in-progress drag may cross into a bar,
+        // and a pointerup must always finalize an active gesture so an edge tap
+        // still clicks and the gesture state is cleared.
+        const finalizingGesture = e.type === "pointerup" && touchGesture.current !== null;
+        if (
+          !finalizingGesture &&
+          touchGesture.current?.dragging !== true &&
+          !isInVideoBounds(e.offsetX, e.offsetY, area)
+        ) {
+          return;
+        }
 
-        // Convert to HID absolute coordinate system (0-32767 range)
-        const x = Math.round(relativeX * 32767);
-        const y = Math.round(relativeY * 32767);
-
-        // Send mouse movement
-        const { buttons } = e;
-        sendAbsMouseMovement(x, y, buttons);
+        const { gesture, reports } = stepTouchGesture(touchGesture.current, {
+          type: e.type as TouchPointerEvent["type"],
+          offsetX: e.offsetX,
+          offsetY: e.offsetY,
+          x,
+          y,
+        });
+        touchGesture.current = gesture;
+        for (const report of reports) {
+          sendAbsMouseMovement(report.x, report.y, report.buttons);
+        }
       },
     [mouseMode, sendAbsMouseMovement],
   );
@@ -154,6 +174,7 @@ export default function useMouse() {
   );
 
   const resetMousePosition = useCallback(() => {
+    touchGesture.current = null;
     sendAbsMouseMovement(lastAbsPos.current.x, lastAbsPos.current.y, 0);
   }, [sendAbsMouseMovement]);
 
